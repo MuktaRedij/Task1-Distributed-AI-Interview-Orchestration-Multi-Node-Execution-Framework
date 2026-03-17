@@ -2,15 +2,15 @@
 Celery Tasks for Interview Processing
 Defines tasks executed by worker nodes
 
+Integrated with SessionManager for proper state lifecycle management.
+
 Execution Flow:
-1. Retrieve interview session from database
-2. Update status to "processing"
-3. Run video analysis pipeline
-4. Run audio analysis pipeline
-5. Run answer evaluation pipeline
-6. Generate risk report using RiskScoringEngine
-7. Store results in database
-8. Update status to "completed"
+1. QUEUED → PROCESSING (update status with worker node info)
+2. PROCESSING → VIDEO_PROCESSING (update detailed status)
+3. VIDEO_PROCESSING → AUDIO_PROCESSING (run audio pipeline)
+4. AUDIO_PROCESSING → EVALUATING (run evaluation pipeline)
+5. EVALUATING → COMPLETED (generate risk report, store results)
+6. On Error: PROCESSING → FAILED (handle failures gracefully)
 """
 
 from workers.celery_app import celery_app
@@ -18,6 +18,8 @@ from workers.video_pipeline import run_video_analysis
 from workers.audio_pipeline import run_audio_analysis
 from workers.evaluation_pipeline import evaluate_answers
 from workers.risk_engine import RiskScoringEngine
+from orchestrator.session_manager import SessionManager
+from orchestrator.state_sync import StateSynchronizer
 from database.db import SessionLocal
 from database.models import InterviewSession
 from datetime import datetime
@@ -26,22 +28,25 @@ import socket
 
 logger = logging.getLogger(__name__)
 
+# Initialize managers
+session_manager = SessionManager()
+state_sync = StateSynchronizer()
+
 
 @celery_app.task(bind=True, max_retries=3)
 def process_interview_session(self, session_id):
     """
     Main interview processing task executed by worker nodes
     
-    This is the primary task that orchestrates all interview analysis pipelines.
+    This is the primary task that orchestrates all interview analysis pipelines
+    with full lifecycle state management.
     
-    Responsibilities:
-    1. Update session status to "processing" with worker node info
-    2. Run video monitoring pipeline
-    3. Run audio monitoring pipeline
-    4. Run answer evaluation pipeline
-    5. Generate comprehensive risk report
-    6. Store all results in database
-    7. Update session status to "completed"
+    Execution states:
+    1. QUEUED → PROCESSING (worker assignment)
+    2. PROCESSING → VIDEO_PROCESSING
+    3. VIDEO_PROCESSING → AUDIO_PROCESSING
+    4. AUDIO_PROCESSING → EVALUATING
+    5. EVALUATING → COMPLETED (store results)
     
     Args:
         session_id: Unique identifier for the interview session
@@ -52,46 +57,74 @@ def process_interview_session(self, session_id):
     Raises:
         Exception: On processing failure, task will retry with exponential backoff
     """
-    session = SessionLocal()
+    worker_hostname = socket.gethostname()
     
     try:
-        logger.info(f"Worker {socket.gethostname()} starting interview session processing: {session_id}")
+        logger.info(f"Worker {worker_hostname} starting interview session: {session_id}")
         
-        # Retrieve interview session from database
-        interview = session.query(InterviewSession).filter(
-            InterviewSession.session_id == session_id
-        ).first()
+        # Update status to PROCESSING
+        logger.info(f"Updating session {session_id} to PROCESSING status")
+        session_manager.update_session_status(
+            session_id,
+            session_manager.PROCESSING,
+            {"assigned_node": worker_hostname}
+        )
         
-        if not interview:
-            logger.error(f"Interview session {session_id} not found in database")
-            raise ValueError(f"Interview session {session_id} not found")
+        # Update database with start time and assigned node
+        db_session = SessionLocal()
+        try:
+            interview = db_session.query(InterviewSession).filter(
+                InterviewSession.session_id == session_id
+            ).first()
+            
+            if interview:
+                interview.assigned_node = worker_hostname
+                interview.start_time = datetime.utcnow()
+                db_session.commit()
+        finally:
+            db_session.close()
         
-        # Update session status to "processing"
-        interview.status = "processing"
-        interview.assigned_node = socket.gethostname()
-        interview.start_time = datetime.utcnow()
-        session.commit()
-        logger.info(f"Updated session {session_id} status to 'processing'")
+        # ========== STAGE 1: VIDEO ANALYSIS ==========
         
-        # ========== EXECUTION FLOW ==========
+        logger.info(f"Stage 1/4: Video analysis for session {session_id}")
+        session_manager.update_session_status(
+            session_id,
+            session_manager.VIDEO_PROCESSING,
+            {"stage": "video_analysis"}
+        )
         
-        # Step 1: Run video analysis
-        logger.info(f"Step 1/3: Starting video analysis for session {session_id}")
         video_result = run_video_analysis(session_id)
-        logger.info(f"Video analysis completed: {video_result}")
+        logger.info(f"Video analysis completed for session {session_id}")
         
-        # Step 2: Run audio analysis
-        logger.info(f"Step 2/3: Starting audio analysis for session {session_id}")
+        # ========== STAGE 2: AUDIO ANALYSIS ==========
+        
+        logger.info(f"Stage 2/4: Audio analysis for session {session_id}")
+        session_manager.update_session_status(
+            session_id,
+            session_manager.AUDIO_PROCESSING,
+            {"stage": "audio_analysis"}
+        )
+        
         audio_result = run_audio_analysis(session_id)
-        logger.info(f"Audio analysis completed: {audio_result}")
+        logger.info(f"Audio analysis completed for session {session_id}")
         
-        # Step 3: Run answer evaluation
-        logger.info(f"Step 3/3: Starting answer evaluation for session {session_id}")
+        # ========== STAGE 3: ANSWER EVALUATION ==========
+        
+        logger.info(f"Stage 3/4: Answer evaluation for session {session_id}")
+        session_manager.update_session_status(
+            session_id,
+            session_manager.EVALUATING,
+            {"stage": "evaluation"}
+        )
+        
         evaluation_result = evaluate_answers(session_id)
-        logger.info(f"Answer evaluation completed: {evaluation_result}")
+        logger.info(f"Answer evaluation completed for session {session_id}")
         
-        # Step 4: Generate comprehensive risk report
-        logger.info(f"Generating risk report for session {session_id}")
+        # ========== STAGE 4: RISK CALCULATION & COMPLETION ==========
+        
+        logger.info(f"Stage 4/4: Risk calculation for session {session_id}")
+        
+        # Generate comprehensive risk report
         risk_report = RiskScoringEngine.generate_risk_report(
             session_id, 
             video_result, 
@@ -101,20 +134,40 @@ def process_interview_session(self, session_id):
         
         final_risk_score = risk_report["final_risk_score"]
         risk_classification = risk_report["risk_classification"]
-        logger.info(f"Risk report generated: {risk_classification} (score: {final_risk_score})")
+        logger.info(f"Risk report: {risk_classification} (score: {final_risk_score})")
         
-        # Step 5: Store results in database
-        logger.info(f"Storing results for session {session_id}")
-        interview.risk_score = final_risk_score
-        interview.video_analysis = video_result
-        interview.audio_analysis = audio_result
-        interview.evaluation_analysis = evaluation_result
-        interview.status = "completed"
-        interview.end_time = datetime.utcnow()
-        session.commit()
-        logger.info(f"Results stored successfully for session {session_id}")
+        # Store results in database
+        db_session = SessionLocal()
+        try:
+            interview = db_session.query(InterviewSession).filter(
+                InterviewSession.session_id == session_id
+            ).first()
+            
+            if interview:
+                interview.risk_score = final_risk_score
+                interview.video_analysis = video_result
+                interview.audio_analysis = audio_result
+                interview.evaluation_analysis = evaluation_result
+                interview.end_time = datetime.utcnow()
+                db_session.commit()
+                logger.info(f"Stored results for session {session_id}")
+        finally:
+            db_session.close()
         
-        # Prepare response
+        # Mark session as completed via session manager
+        session_manager.mark_session_completed(session_id, final_risk_score)
+        logger.info(f"Session {session_id} marked COMPLETED with risk score {final_risk_score}")
+        
+        # Update cache
+        session_data = state_sync.get_session_state(session_id)
+        if session_data:
+            session_data["status"] = session_manager.COMPLETED
+            session_data["risk_score"] = final_risk_score
+            session_data["risk_classification"] = risk_classification
+            session_data["end_time"] = datetime.utcnow().isoformat()
+            state_sync.set_session_state(session_id, session_data)
+        
+        # Prepare result
         result = {
             "session_id": session_id,
             "status": "completed",
@@ -124,7 +177,7 @@ def process_interview_session(self, session_id):
             "risk_report": risk_report,
             "final_risk_score": final_risk_score,
             "risk_classification": risk_classification,
-            "processed_by": socket.gethostname(),
+            "processed_by": worker_hostname,
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -134,52 +187,37 @@ def process_interview_session(self, session_id):
     except Exception as exc:
         logger.error(f"Error processing session {session_id}: {str(exc)}", exc_info=True)
         
-        # Update session status to failed
+        # Mark session as failed via session manager
         try:
-            interview = session.query(InterviewSession).filter(
-                InterviewSession.session_id == session_id
-            ).first()
-            if interview:
-                interview.status = "failed"
-                session.commit()
+            session_manager.mark_session_failed(
+                session_id,
+                f"Processing failed: {str(exc)}"
+            )
+            logger.info(f"Session {session_id} marked FAILED")
         except Exception as e:
-            logger.error(f"Error updating status to failed: {str(e)}")
+            logger.error(f"Error marking session failed: {str(e)}")
         
         # Retry with exponential backoff (2^retries seconds)
         retry_delay = 2 ** self.request.retries
-        logger.info(f"Retrying task in {retry_delay} seconds (attempt {self.request.retries + 1}/3)")
+        logger.info(f"Retrying task in {retry_delay}s (attempt {self.request.retries + 1}/3)")
         raise self.retry(exc=exc, countdown=retry_delay)
-        
-    finally:
-        session.close()
 
 
-def update_session_status(session_id: str, status: str, end_time: bool = False):
+def sync_session_cache_to_db(session_id: str) -> bool:
     """
-    Update interview session status in database
+    Manually sync session cache to database
     
     Args:
         session_id: Interview session identifier
-        status: New status (pending, processing, completed, failed)
-        end_time: Whether to set end_time to current timestamp
-    """
-    session = SessionLocal()
-    try:
-        interview = session.query(InterviewSession).filter(
-            InterviewSession.session_id == session_id
-        ).first()
         
-        if interview:
-            interview.status = status
-            if end_time:
-                interview.end_time = datetime.utcnow()
-            session.commit()
-            logger.info(f"Updated session {session_id} status to '{status}'")
-        else:
-            logger.warning(f"Session {session_id} not found for status update")
-            
+    Returns:
+        bool: True if successful
+    """
+    try:
+        session_data = state_sync.get_session_state(session_id)
+        if session_data:
+            return state_sync.sync_state_to_db(session_id, session_data)
+        return False
     except Exception as e:
-        logger.error(f"Error updating session status: {str(e)}")
-        session.rollback()
-    finally:
-        session.close()
+        logger.error(f"Error syncing session cache: {str(e)}")
+        return False
