@@ -25,6 +25,9 @@ from orchestrator.state_sync import StateSynchronizer
 from orchestrator.scheduler import Scheduler, TaskPriority
 from orchestrator.load_balancer import LoadBalancer, BalancingStrategy
 from orchestrator.worker_registry import WorkerRegistry
+from orchestrator.fault_manager import FaultManager, FailureType
+from orchestrator.retry_manager import RetryManager, RetryStrategy
+from orchestrator.health_monitor import HealthMonitor, HealthStatus
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -44,6 +47,9 @@ state_sync = StateSynchronizer()
 load_balancer = LoadBalancer(strategy=BalancingStrategy.LEAST_LOADED)
 scheduler = Scheduler(load_balancer=load_balancer)
 worker_registry = WorkerRegistry()
+fault_manager = FaultManager()
+retry_manager = RetryManager(max_retries=3, strategy=RetryStrategy.EXPONENTIAL_BACKOFF)
+health_monitor = HealthMonitor()
 
 
 # ========== Request/Response Models ==========
@@ -109,6 +115,9 @@ async def startup_event():
     print("✓ Load Balancer initialized (Least Loaded strategy)")
     print("✓ Scheduler ready")
     print("✓ Worker Registry active")
+    print("✓ Fault Manager initialized")
+    print("✓ Retry Manager ready")
+    print("✓ Health Monitor active")
 
 
 @app.get("/health")
@@ -800,6 +809,292 @@ async def deregister_worker(worker_id: str):
     except Exception as e:
         logger.error(f"Error deregistering worker: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deregistering worker: {str(e)}")
+
+
+# ========== Fault Tolerance & Recovery Endpoints ==========
+
+@app.get("/failed-sessions")
+async def get_failed_sessions(limit: int = 100):
+    """
+    Get sessions that failed during processing
+    
+    Args:
+        limit: Maximum number of failed sessions to return
+        
+    Returns:
+        dict: List of failed sessions with details
+    """
+    try:
+        logger.debug("Fetching failed sessions")
+        
+        # Get from session tracker
+        failed = session_tracker.get_failed_sessions(limit=limit)
+        
+        return {
+            "count": len(failed),
+            "failed_sessions": failed,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching failed sessions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching failed sessions: {str(e)}")
+
+
+@app.post("/retry-session/{session_id}")
+async def retry_failed_session(session_id: str):
+    """
+    Retry a failed interview session
+    
+    Attempts to reschedule the session if it hasn't exceeded max retries.
+    
+    Args:
+        session_id: ID of session to retry
+        
+    Returns:
+        dict: Retry scheduling result
+    """
+    try:
+        logger.info(f"Retry request for session: {session_id}")
+        
+        # Check if can retry
+        if not retry_manager.can_retry(session_id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Session {session_id} has exceeded maximum retry attempts"
+            )
+        
+        # Get retry info
+        retry_info = retry_manager.get_retry_info(session_id)
+        
+        # Schedule retry with exponential backoff
+        retry_scheduled = retry_manager.schedule_retry(session_id)
+        
+        if not retry_scheduled:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to schedule retry for session {session_id}"
+            )
+        
+        logger.info(f"Session {session_id} scheduled for retry: {retry_info}")
+        
+        return {
+            "status": "success",
+            "message": f"Session {session_id} scheduled for retry",
+            "session_id": session_id,
+            "retry_info": retry_info,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrying session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrying session: {str(e)}")
+
+
+@app.get("/system-health")
+async def get_system_health():
+    """
+    Get comprehensive system health status
+    
+    Performs health checks on:
+    - Redis connectivity
+    - Worker nodes
+    - Active sessions
+    - Queue backlog
+    
+    Returns:
+        dict: System health status and metrics
+    """
+    try:
+        logger.debug("Performing system health check")
+        
+        # Perform comprehensive health check
+        health = health_monitor.check_system_health(
+            worker_registry=worker_registry,
+            session_manager=session_manager
+        )
+        
+        return health
+    except Exception as e:
+        logger.error(f"Error checking system health: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error checking system health: {str(e)}")
+
+
+@app.get("/worker-health")
+async def get_worker_health():
+    """
+    Get detailed health status of all workers
+    
+    Returns:
+        dict: Worker health information
+    """
+    try:
+        logger.debug("Fetching worker health status")
+        
+        # Check worker health
+        worker_health = health_monitor.check_worker_health(worker_registry)
+        
+        return worker_health
+    except Exception as e:
+        logger.error(f"Error fetching worker health: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching worker health: {str(e)}")
+
+
+@app.get("/recovery-queue")
+async def get_recovery_queue(limit: int = 50):
+    """
+    Get sessions queued for recovery/retry
+    
+    Args:
+        limit: Maximum number to return
+        
+    Returns:
+        dict: Recovery queue entries
+    """
+    try:
+        logger.debug("Fetching recovery queue")
+        
+        recovery_queue = fault_manager.get_recovery_queue(limit=limit)
+        
+        return {
+            "count": len(recovery_queue),
+            "recovery_queue": recovery_queue,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching recovery queue: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching recovery queue: {str(e)}")
+
+
+@app.get("/failure-log")
+async def get_failure_log(limit: int = 100):
+    """
+    Get system failure log entries
+    
+    Args:
+        limit: Maximum number of entries to return
+        
+    Returns:
+        dict: Failure log entries
+    """
+    try:
+        logger.debug("Fetching failure log")
+        
+        failures = fault_manager.get_failure_log(limit=limit)
+        
+        return {
+            "count": len(failures),
+            "failures": failures,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching failure log: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching failure log: {str(e)}")
+
+
+@app.get("/dead-letter-queue")
+async def get_dead_letter_queue(limit: int = 50):
+    """
+    Get permanently failed sessions in dead letter queue
+    
+    Args:
+        limit: Maximum number to return
+        
+    Returns:
+        dict: Dead letter queue entries
+    """
+    try:
+        logger.debug("Fetching dead letter queue")
+        
+        dlq = fault_manager.get_dead_letter_queue(limit=limit)
+        
+        return {
+            "count": len(dlq),
+            "dead_letter_queue": dlq,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching dead letter queue: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching dead letter queue: {str(e)}")
+
+
+@app.get("/fault-statistics")
+async def get_fault_statistics():
+    """
+    Get aggregate fault and recovery statistics
+    
+    Returns:
+        dict: System fault metrics and trends
+    """
+    try:
+        logger.debug("Generating fault statistics")
+        
+        fault_stats = fault_manager.get_system_fault_stats()
+        retry_stats = retry_manager.get_retry_statistics()
+        
+        return {
+            "fault_statistics": fault_stats,
+            "retry_statistics": retry_stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error generating fault statistics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating fault statistics: {str(e)}")
+
+
+@app.post("/detect-failures")
+async def detect_and_handle_failures():
+    """
+    Manually trigger failure detection and recovery
+    
+    Scans for:
+    - Failed sessions (stuck in PROCESSING)
+    - Unhealthy workers
+    - Stuck sessions
+    
+    Triggers recovery for detected failures.
+    
+    Returns:
+        dict: Detection and recovery results
+    """
+    try:
+        logger.info("Manual failure detection triggered")
+        
+        # Detect failed sessions
+        failed_sessions = fault_manager.detect_failed_sessions()
+        
+        # Detect unhealthy workers
+        unhealthy_workers = health_monitor.detect_worker_failures(worker_registry)
+        
+        # Detect stuck sessions
+        stuck_sessions = health_monitor.detect_stuck_sessions(session_manager)
+        
+        # Handle worker failures
+        handled = 0
+        for worker_id in unhealthy_workers:
+            if fault_manager.handle_worker_failure(worker_id, "Detected as unhealthy"):
+                handled += 1
+        
+        results = {
+            "status": "success",
+            "failed_sessions_detected": len(failed_sessions),
+            "failed_sessions": failed_sessions,
+            "unhealthy_workers_detected": len(unhealthy_workers),
+            "unhealthy_workers": unhealthy_workers,
+            "workers_handled": handled,
+            "stuck_sessions_detected": len(stuck_sessions),
+            "stuck_sessions": stuck_sessions,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        logger.info(f"Failure detection complete: {len(failed_sessions)} failed, "
+                   f"{len(unhealthy_workers)} unhealthy workers, {len(stuck_sessions)} stuck")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error during failure detection: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error during failure detection: {str(e)}")
 
 
 if __name__ == "__main__":
