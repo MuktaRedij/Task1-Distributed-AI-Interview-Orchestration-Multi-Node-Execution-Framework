@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import logging
+import asyncio
 from datetime import datetime
 
 from workers.tasks import process_interview_session
@@ -28,6 +29,9 @@ from orchestrator.worker_registry import WorkerRegistry
 from orchestrator.fault_manager import FaultManager, FailureType
 from orchestrator.retry_manager import RetryManager, RetryStrategy
 from orchestrator.health_monitor import HealthMonitor, HealthStatus
+from monitoring.metrics_collector import MetricsCollector
+from monitoring.dashboard_api import create_dashboard_routes
+from monitoring.websocket_manager import ws_manager
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -50,6 +54,20 @@ worker_registry = WorkerRegistry()
 fault_manager = FaultManager()
 retry_manager = RetryManager(max_retries=3, strategy=RetryStrategy.EXPONENTIAL_BACKOFF)
 health_monitor = HealthMonitor()
+metrics_collector = MetricsCollector()
+
+# Register dashboard routes
+dashboard_routes = create_dashboard_routes(
+    metrics_collector=metrics_collector,
+    session_manager=session_manager,
+    worker_registry=worker_registry,
+    session_tracker=session_tracker,
+    fault_manager=fault_manager,
+    retry_manager=retry_manager,
+    health_monitor=health_monitor,
+    ws_manager=ws_manager
+)
+app.include_router(dashboard_routes, prefix="/monitoring", tags=["monitoring"])
 
 
 # ========== Request/Response Models ==========
@@ -118,6 +136,9 @@ async def startup_event():
     print("✓ Fault Manager initialized")
     print("✓ Retry Manager ready")
     print("✓ Health Monitor active")
+    print("✓ Metrics Collector ready")
+    print("✓ Dashboard API initialized")
+    print("✓ WebSocket Manager for real-time updates active")
 
 
 @app.get("/health")
@@ -1095,6 +1116,40 @@ async def detect_and_handle_failures():
     except Exception as e:
         logger.error(f"Error during failure detection: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error during failure detection: {str(e)}")
+
+
+# ========== Dashboard HTML Endpoint ==========
+
+@app.get("/dashboard")
+async def get_dashboard():
+    """
+    Serve the monitoring dashboard HTML
+    
+    Returns:
+        HTML content of the dashboard
+    """
+    try:
+        import os
+        dashboard_path = os.path.join(
+            os.path.dirname(__file__), 
+            "..", 
+            "monitoring", 
+            "dashboard.html"
+        )
+        
+        if os.path.exists(dashboard_path):
+            with open(dashboard_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse(content=html_content)
+        else:
+            raise HTTPException(status_code=404, detail="Dashboard HTML not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving dashboard: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error serving dashboard: {str(e)}")
 
 
 if __name__ == "__main__":
