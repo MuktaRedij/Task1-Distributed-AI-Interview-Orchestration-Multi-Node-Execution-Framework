@@ -245,26 +245,7 @@ http://localhost:8000/docs
 * Developed **real-time monitoring dashboard**
 * Integrated **AI pipelines with orchestration layer**
 
----
 
-# 💼 Resume Description
-
-> Built a fault-tolerant distributed AI interview orchestration system using FastAPI, Celery, Redis, and PostgreSQL with load balancing, retry mechanisms, dead-letter queues, and real-time monitoring dashboard.
-
----
-
-# 👨‍💻 Author
-
-Mukta Redij
-
----
-
-# ⭐ Final Status
-
-✔ Fully Functional
-✔ Scalable
-✔ Fault-Tolerant
-✔ Production-Ready
 
 ---
 
@@ -276,3 +257,6 @@ Mukta Redij
 * Real-time alerts & notifications
 
 ---
+# 👨‍💻 Author
+
+Mukta Redij
