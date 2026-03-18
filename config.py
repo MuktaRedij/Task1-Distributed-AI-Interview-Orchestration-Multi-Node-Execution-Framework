@@ -10,10 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Redis Configuration
-REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+REDIS_URL = os.getenv('REDIS_URL', 'redis://ai-interview-redis:6379/0')
 
 # PostgreSQL Configuration
-POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
+POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'ai-interview-postgres')
 POSTGRES_DB = os.getenv('POSTGRES_DB', 'ai_interview_db')
 POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
 POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'postgres')

@@ -14,6 +14,7 @@ from typing import Dict, List, Any, Tuple
 from datetime import datetime, timedelta
 from database.db import SessionLocal
 from database.models import InterviewSession
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

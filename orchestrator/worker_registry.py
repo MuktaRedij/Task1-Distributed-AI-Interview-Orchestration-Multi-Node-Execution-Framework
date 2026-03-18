@@ -207,10 +207,10 @@ class WorkerRegistry:
         with self.lock:
             return self.local_workers.get(worker_id)
     
-    def get_all_workers(self) -> List[Dict[str, Any]]:
+    def get_all_workers(self) -> Dict[str, Dict[str, Any]]:
         """Get all registered workers"""
         with self.lock:
-            return list(self.local_workers.values())
+            return dict(self.local_workers)
     
     def get_available_workers(self) -> List[Dict[str, Any]]:
         """

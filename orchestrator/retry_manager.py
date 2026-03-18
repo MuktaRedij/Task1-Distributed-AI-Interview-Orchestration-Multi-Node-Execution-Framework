@@ -17,6 +17,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 from enum import Enum
+from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class RetryManager:
     """
     
     def __init__(self, 
-                 redis_url: str = "redis://localhost:6379/0",
+                 redis_url: str = REDIS_URL,
                  max_retries: int = 3,
                  base_delay: int = 2,
                  max_delay: int = 3600,

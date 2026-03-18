@@ -16,6 +16,7 @@ import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from enum import Enum
+from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class FaultManager:
     - Failure logging and analysis
     """
     
-    def __init__(self, redis_url: str = "redis://localhost:6379/0", debounce_time: int = 60):
+    def __init__(self, redis_url: str = REDIS_URL, debounce_time: int = 60):
         """
         Initialize FaultManager
         

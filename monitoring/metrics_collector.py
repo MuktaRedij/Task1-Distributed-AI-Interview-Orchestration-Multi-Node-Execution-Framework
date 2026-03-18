@@ -15,6 +15,7 @@ import redis
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ class MetricsCollector:
     - Failure and retry patterns
     """
     
-    def __init__(self, redis_url: str = "redis://localhost:6379/0"):
+    def __init__(self, redis_url: str = REDIS_URL):
         """
         Initialize MetricsCollector
         

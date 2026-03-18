@@ -15,6 +15,7 @@ import redis
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
+from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class HealthMonitor:
     """
     
     def __init__(self, 
-                 redis_url: str = "redis://localhost:6379/0",
+                 redis_url: str = REDIS_URL,
                  heartbeat_timeout: int = 60,
                  session_timeout: int = 1800,
                  queue_threshold: int = 1000):

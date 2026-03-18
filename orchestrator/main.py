@@ -32,6 +32,8 @@ from orchestrator.health_monitor import HealthMonitor, HealthStatus
 from monitoring.metrics_collector import MetricsCollector
 from monitoring.dashboard_api import create_dashboard_routes
 from monitoring.websocket_manager import ws_manager
+from database.db import engine
+from database.models import Base
 
 # Initialize FastAPI application
 app = FastAPI(
@@ -125,7 +127,12 @@ class TaskStatusResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Execute on application startup"""
+
+    Base.metadata.create_all(bind=engine)
+
     logger.info("AI Interview Orchestrator server starting...")
+
+    print("✓ Database tables created")
     print("✓ Orchestration server initialized")
     print("✓ Connected to Redis task queue")
     print("✓ Session Manager loaded")
